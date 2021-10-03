@@ -75,7 +75,7 @@ func MessageComponentHandler(s *discordgo.Session, i *discordgo.InteractionCreat
 		response := &discordgo.InteractionResponse{
 			Type: discordgo.InteractionResponseChannelMessageWithSource,
 			Data: &discordgo.InteractionResponseData{
-				Content: i.Member.User.Username + " marked as : **\"I'm going\"**\n\nSee you there  :sunglasses:",
+				Content: i.Member.User.Username + " See you there  :sunglasses:",
 				Flags:   1 << 6,
 			},
 		}
@@ -85,7 +85,7 @@ func MessageComponentHandler(s *discordgo.Session, i *discordgo.InteractionCreat
 		response := &discordgo.InteractionResponse{
 			Type: discordgo.InteractionResponseChannelMessageWithSource,
 			Data: &discordgo.InteractionResponseData{
-				Content: i.Member.User.Username + " marked as: **\"I'm FLAKING\"**\n\nwhat the...  :rage:",
+				Content: i.Member.User.Username + " what the...  :rage:",
 				Flags:   1 << 6,
 			},
 		}
