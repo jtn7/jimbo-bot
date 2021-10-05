@@ -76,7 +76,8 @@ func MessageComponentHandler(s *discordgo.Session, i *discordgo.InteractionCreat
 			Type: discordgo.InteractionResponseChannelMessageWithSource,
 			Data: &discordgo.InteractionResponseData{
 				Content: i.Member.User.Username + " See you there  :sunglasses:",
-				Flags:   1 << 6,
+				// Only the user who pressed the button will see this message
+				Flags: 1 << 6,
 			},
 		}
 		s.InteractionRespond(i.Interaction, response)
@@ -86,7 +87,8 @@ func MessageComponentHandler(s *discordgo.Session, i *discordgo.InteractionCreat
 			Type: discordgo.InteractionResponseChannelMessageWithSource,
 			Data: &discordgo.InteractionResponseData{
 				Content: i.Member.User.Username + " what the...  :rage:",
-				Flags:   1 << 6,
+				// Only the user who pressed the button will see this message
+				Flags: 1 << 6,
 			},
 		}
 		s.InteractionRespond(i.Interaction, response)
