@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/rand"
+	"database/sql"
 	"fmt"
 	"log"
 	"math/big"
@@ -10,14 +11,34 @@ import (
 	"syscall"
 	"time"
 
+	_ "github.com/mattn/go-sqlite3"
+
 	"github.com/bwmarrin/discordgo"
 )
 
-// Variables used for command line parameters
 var botToken string
+var insertEvent *sql.Stmt
+var updateEvent *sql.Stmt
 
 func init() {
 	botToken = os.Getenv("TOKEN")
+
+	// Initialize DB driver and open sqlite DB
+	db, err := sql.Open("sqlite3", "./jimbo-bot.db")
+	if err != nil {
+		log.Fatal("could not open db file: ", err)
+	}
+
+	insertEvent, err = db.Prepare(`insert into Events(MessageID, Name, Date, Details, Going, Flaking)
+										values(?,?,?,?,?,?)`)
+	if err != nil {
+		log.Fatal("failed to create insertEvent prepared statement: ", err)
+	}
+
+	updateEvent, err = db.Prepare(`update Events set Going = ? where MessageID = ?`)
+	if err != nil {
+		log.Fatal("failed to create updateEvent prepared statement: ", err)
+	}
 }
 
 func main() {
@@ -55,7 +76,7 @@ func main() {
 // InteractionHandler responds to Interactions
 func InteractionHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	switch i.Data.Type() {
-	// Handles slash commands
+	// Maps slash commands to handler functions
 	case discordgo.InteractionApplicationCommand:
 		if h, ok := commandHandlers[i.ApplicationCommandData().Name]; ok {
 			h(s, i)
@@ -66,16 +87,55 @@ func InteractionHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	}
 }
 
+var willUpdate = &discordgo.InteractionResponse{Type: discordgo.InteractionResponseDeferredMessageUpdate}
+
 // MessageComponentHandler responds to MessageComponent interactions.
 // MessageComponent interactions are button presses.
 func MessageComponentHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	switch i.MessageComponentData().CustomID {
-
+	case "confirm":
+		s.InteractionRespond(i.Interaction, willUpdate)
+		_, err := s.ChannelMessageEditComplex(&discordgo.MessageEdit{
+			ID:      i.Message.ID,
+			Channel: i.Message.ChannelID,
+			Content: &i.Message.Content,
+			Components: []discordgo.MessageComponent{
+				discordgo.ActionsRow{
+					Components: []discordgo.MessageComponent{
+						discordgo.Button{
+							Label:    "I'm going",
+							Style:    discordgo.SuccessButton,
+							CustomID: "going",
+						},
+						discordgo.Button{
+							Label:    "I'm FLAKING",
+							Style:    discordgo.DangerButton,
+							CustomID: "flaking",
+						},
+					},
+				},
+			},
+		})
+		if err != nil {
+			log.Println("error editing interaction: ", err)
+		}
+	// This is for not committing an event
+	case "unconfirm":
+		s.InteractionRespond(i.Interaction, willUpdate)
+		s.ChannelMessageDelete(i.ChannelID, i.Message.ID)
 	case "going":
+		// TODO
+		// need to abstract getting the attendee list and appending another
+		// Add user to 'going' list
+		// _, err := updateEvent.Exec(i.Member.User.ID, i.Message.ID)
+		// if err != nil {
+		// 	log.Fatal("could not insert into Events table: ", err)
+		// }
+
 		response := &discordgo.InteractionResponse{
 			Type: discordgo.InteractionResponseChannelMessageWithSource,
 			Data: &discordgo.InteractionResponseData{
-				Content: i.Member.User.Username + " See you there  :sunglasses:",
+				Content: "See you there  :sunglasses:",
 				// Only the user who pressed the button will see this message
 				Flags: 1 << 6,
 			},
@@ -86,7 +146,7 @@ func MessageComponentHandler(s *discordgo.Session, i *discordgo.InteractionCreat
 		response := &discordgo.InteractionResponse{
 			Type: discordgo.InteractionResponseChannelMessageWithSource,
 			Data: &discordgo.InteractionResponseData{
-				Content: i.Member.User.Username + " what the...  :rage:",
+				Content: "what the...  :rage:",
 				// Only the user who pressed the button will see this message
 				Flags: 1 << 6,
 			},
@@ -116,7 +176,8 @@ func eventCreate(c *discordgo.ApplicationCommandInteractionDataOption) (r *disco
 		r = &discordgo.InteractionResponse{
 			Type: discordgo.InteractionResponseChannelMessageWithSource,
 			Data: &discordgo.InteractionResponseData{
-				Content: "You formatted the date wrong. The format is Try again.",
+				Content: "You formatted the date wrong. The format is \"MM/DD/YY HH:MM\" Try again.",
+				Flags:   1 << 6,
 			},
 		}
 		return
@@ -135,20 +196,32 @@ func eventCreate(c *discordgo.ApplicationCommandInteractionDataOption) (r *disco
 				discordgo.ActionsRow{
 					Components: []discordgo.MessageComponent{
 						discordgo.Button{
-							Label:    "I'm going",
+							Label:    "Confirm Event",
 							Style:    discordgo.SuccessButton,
-							CustomID: "going",
+							CustomID: "confirm",
 						},
 						discordgo.Button{
-							Label:    "I'm FLAKING",
+							Label:    "Delete",
 							Style:    discordgo.DangerButton,
-							CustomID: "flaking",
+							CustomID: "unconfirm",
 						},
 					},
 				},
 			},
 		},
 	}
+
+	// _, err = insertEventStmt.Exec(title, date.Format("Mon 01/02/06 15:04"), description, "", "")
+	// if err != nil {
+	// 	r = &discordgo.InteractionResponse{
+	// 		Type: discordgo.InteractionResponseChannelMessageWithSource,
+	// 		Data: &discordgo.InteractionResponseData{
+	// 			Content: "Could not register event. Contact developer.",
+	// 			Flags:   1 << 6,
+	// 		},
+	// 	}
+	// 	log.Println("could not insert record into Events table: ", err)
+	// }
 
 	return
 }
@@ -172,7 +245,6 @@ func SlashEventHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		response = eventCreate(command)
 	}
 
-	// response := &discordgo.InteractionResponse{Type: discordgo.InteractionResponsePong}
 	if response != nil {
 		s.InteractionRespond(i.Interaction, response)
 	}
