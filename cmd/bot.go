@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -17,8 +18,13 @@ import (
 )
 
 var botToken string
+
+// Event prepared statements
 var insertEvent *sql.Stmt
-var updateEvent *sql.Stmt
+var getGoing *sql.Stmt
+var getFlaking *sql.Stmt
+var updateEventGoing *sql.Stmt
+var updateEventFlaking *sql.Stmt
 
 func init() {
 	botToken = os.Getenv("TOKEN")
@@ -29,17 +35,32 @@ func init() {
 		log.Fatal("could not open db file: ", err)
 	}
 
-	insertEvent, err = db.Prepare(`insert into Events(MessageID, Name, Date, Details, Going, Flaking)
+	insertEvent, err = db.Prepare(`insert into Events(MessageID, Title, Date, Details, Going, Flaking)
 										values(?,?,?,?,?,?)`)
 	if err != nil {
 		log.Fatal("failed to create insertEvent prepared statement: ", err)
 	}
 
-	updateEvent, err = db.Prepare(`update Events set Going = ? where MessageID = ?`)
+	getGoing, err = db.Prepare(`select Going from Events where MessageID = ?`)
 	if err != nil {
-		log.Fatal("failed to create updateEvent prepared statement: ", err)
+		log.Fatal("failed to create updateEventGoing prepared statement: ", err)
+	}
+	getFlaking, err = db.Prepare(`select Flaking from Events where MessageID = ?`)
+	if err != nil {
+		log.Fatal("failed to create updateEventGoing prepared statement: ", err)
+	}
+
+	updateEventGoing, err = db.Prepare(`update Events set Going = ? where MessageID = ?`)
+	if err != nil {
+		log.Fatal("failed to create updateEventGoing prepared statement: ", err)
+	}
+	updateEventFlaking, err = db.Prepare(`update Events set Flaking = ? where MessageID = ?`)
+	if err != nil {
+		log.Fatal("failed to create updateEventFlaking prepared statement: ", err)
 	}
 }
+
+var est, _ = time.LoadLocation("America/New_York")
 
 func main() {
 	if botToken == "" {
@@ -93,12 +114,21 @@ var willUpdate = &discordgo.InteractionResponse{Type: discordgo.InteractionRespo
 // MessageComponent interactions are button presses.
 func MessageComponentHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	switch i.MessageComponentData().CustomID {
+	// Confirming event creation
 	case "confirm":
 		s.InteractionRespond(i.Interaction, willUpdate)
-		_, err := s.ChannelMessageEditComplex(&discordgo.MessageEdit{
+
+		eventDate, _ := time.ParseInLocation("Mon 01/02/06 3:04 PM", i.Message.Embeds[0].Fields[0].Value, est)
+		// Insert event into db
+		_, err := insertEvent.Exec(i.Message.ID, i.Message.Embeds[0].Title, fmt.Sprintf("%d", eventDate.Unix()), i.Message.Embeds[0].Description, "", "")
+		if err != nil {
+			log.Println("ERROR: Could not insert into db:", err)
+		}
+
+		// Edit event message
+		_, err = s.ChannelMessageEditComplex(&discordgo.MessageEdit{
 			ID:      i.Message.ID,
 			Channel: i.Message.ChannelID,
-			Content: &i.Message.Content,
 			Components: []discordgo.MessageComponent{
 				discordgo.ActionsRow{
 					Components: []discordgo.MessageComponent{
@@ -124,34 +154,60 @@ func MessageComponentHandler(s *discordgo.Session, i *discordgo.InteractionCreat
 		s.InteractionRespond(i.Interaction, willUpdate)
 		s.ChannelMessageDelete(i.ChannelID, i.Message.ID)
 	case "going":
-		// TODO
-		// need to abstract getting the attendee list and appending another
-		// Add user to 'going' list
-		// _, err := updateEvent.Exec(i.Member.User.ID, i.Message.ID)
-		// if err != nil {
-		// 	log.Fatal("could not insert into Events table: ", err)
-		// }
+		s.InteractionRespond(i.Interaction, willUpdate)
 
-		response := &discordgo.InteractionResponse{
-			Type: discordgo.InteractionResponseChannelMessageWithSource,
-			Data: &discordgo.InteractionResponseData{
-				Content: "See you there  :sunglasses:",
-				// Only the user who pressed the button will see this message
-				Flags: 1 << 6,
-			},
+		// Get people going for the event
+		var result string
+		err := getGoing.QueryRow(i.Message.ID).Scan(&result)
+		if err != nil {
+			log.Printf("ERROR: Could not query getGoing with %s: %v", i.Message.ID, err)
+			return
 		}
-		s.InteractionRespond(i.Interaction, response)
 
+		// Set going slice and protect against empty going list
+		var going []string
+		if len(result) > 0 {
+			going = strings.Split(result, ",;")
+		}
+
+		// Check if person is already going
+		attending := make(map[string]bool)
+		for _, person := range going {
+			attending[person] = true
+		}
+		if attending[i.Member.User.Username] {
+			return
+		}
+
+		// Check if the person is in the flaking list
+
+		going = append(going, i.Member.User.Username)
+
+		_, err = s.ChannelMessageEditComplex(&discordgo.MessageEdit{
+			ID:      i.Message.ID,
+			Channel: i.ChannelID,
+			Embeds: []*discordgo.MessageEmbed{
+				i.Message.Embeds[0],
+				{
+					Title: "Attendees",
+					Fields: []*discordgo.MessageEmbedField{
+						{Name: "Going", Value: strings.Join(going, ", ")},
+					},
+				},
+			},
+		})
+		if err != nil {
+			log.Printf("ERROR: Could not edit event message %s: %v", i.Message.ID, err)
+			return
+		}
+
+		// Insert user into going for event
+		_, err = updateEventGoing.Exec(strings.Join(going, ",;"), i.Message.ID)
+		if err != nil {
+			log.Printf("ERROR: Could not updateEventGoing with %s: %v", i.Message.ID, err)
+		}
 	case "flaking":
-		response := &discordgo.InteractionResponse{
-			Type: discordgo.InteractionResponseChannelMessageWithSource,
-			Data: &discordgo.InteractionResponseData{
-				Content: "what the...  :rage:",
-				// Only the user who pressed the button will see this message
-				Flags: 1 << 6,
-			},
-		}
-		s.InteractionRespond(i.Interaction, response)
+		s.InteractionRespond(i.Interaction, willUpdate)
 	}
 }
 
@@ -183,15 +239,10 @@ func eventCreate(c *discordgo.ApplicationCommandInteractionDataOption) (r *disco
 		return
 	}
 
-	message := fmt.Sprintf(
-		":star: **NEW EVENT** :star:\n\n**%s**\n%s\n\n:calendar: %s",
-		title, description, date.Format("Mon 01/02/06 15:04"),
-	)
-
 	r = &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
-			Content: message,
+			Content: ":star: **NEW EVENT** :star:",
 			Components: []discordgo.MessageComponent{
 				discordgo.ActionsRow{
 					Components: []discordgo.MessageComponent{
@@ -208,25 +259,23 @@ func eventCreate(c *discordgo.ApplicationCommandInteractionDataOption) (r *disco
 					},
 				},
 			},
+			Embeds: []*discordgo.MessageEmbed{
+				{
+					Title:       title,
+					Description: description,
+					Fields: []*discordgo.MessageEmbedField{
+						{
+							Name:  "Time",
+							Value: date.Format("Mon 01/02/06 3:04 PM"),
+						},
+					},
+				},
+			},
 		},
 	}
 
-	// _, err = insertEventStmt.Exec(title, date.Format("Mon 01/02/06 15:04"), description, "", "")
-	// if err != nil {
-	// 	r = &discordgo.InteractionResponse{
-	// 		Type: discordgo.InteractionResponseChannelMessageWithSource,
-	// 		Data: &discordgo.InteractionResponseData{
-	// 			Content: "Could not register event. Contact developer.",
-	// 			Flags:   1 << 6,
-	// 		},
-	// 	}
-	// 	log.Println("could not insert record into Events table: ", err)
-	// }
-
 	return
 }
-
-var est, _ = time.LoadLocation("America/New_York")
 
 // Handles /event
 func SlashEventHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
