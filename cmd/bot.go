@@ -149,14 +149,14 @@ func MessageComponentHandler(s *discordgo.Session, i *discordgo.InteractionCreat
 		if err != nil {
 			log.Println("error editing interaction: ", err)
 		}
-	// This is for not committing an event
+	// Delete event interaction as opposed to confirming and committing it
 	case "unconfirm":
 		s.InteractionRespond(i.Interaction, willUpdate)
 		s.ChannelMessageDelete(i.ChannelID, i.Message.ID)
 	case "going":
 		s.InteractionRespond(i.Interaction, willUpdate)
 
-		// Get people going for the event
+		// Get people going to the event
 		var result string
 		err := getGoing.QueryRow(i.Message.ID).Scan(&result)
 		if err != nil {
@@ -179,26 +179,71 @@ func MessageComponentHandler(s *discordgo.Session, i *discordgo.InteractionCreat
 			return
 		}
 
+		// Get users in the flaking list
+		err = getFlaking.QueryRow(i.Message.ID).Scan(&result)
+		if err != nil {
+			log.Printf("ERROR: Could not query getFlaking with %s: %v", i.Message.ID, err)
+			return
+		}
+		var flaking []string
+		if len(result) > 0 {
+			flaking = strings.Split(result, ",;")
+		}
+
 		// Check if the person is in the flaking list
+		for ind, person := range flaking {
+			// If user is in the flaking list remove them from it
+			if i.Member.User.Username == person {
+				flaking[ind] = flaking[len(flaking)-1]
+				flaking = flaking[:len(flaking)-1]
+
+				_, err = updateEventFlaking.Exec(strings.Join(flaking, ",;"), i.Message.ID)
+				if err != nil {
+					log.Printf("ERROR: Could not remove user from flaking list: updateEventFlaking with %s: %v", i.Message.ID, err)
+				}
+				break
+			}
+		}
 
 		going = append(going, i.Member.User.Username)
 
-		_, err = s.ChannelMessageEditComplex(&discordgo.MessageEdit{
-			ID:      i.Message.ID,
-			Channel: i.ChannelID,
-			Embeds: []*discordgo.MessageEmbed{
-				i.Message.Embeds[0],
-				{
-					Title: "Attendees",
-					Fields: []*discordgo.MessageEmbedField{
-						{Name: "Going", Value: strings.Join(going, ", ")},
+		if len(flaking) > 0 {
+			_, err = s.ChannelMessageEditComplex(&discordgo.MessageEdit{
+				ID:      i.Message.ID,
+				Channel: i.ChannelID,
+				Embeds: []*discordgo.MessageEmbed{
+					i.Message.Embeds[0],
+					{
+						Title: "Attendees",
+						Fields: []*discordgo.MessageEmbedField{
+							{Name: "Going", Value: strings.Join(going, ", ")},
+							{Name: "Flaking", Value: strings.Join(flaking, ", ")},
+						},
 					},
 				},
-			},
-		})
-		if err != nil {
-			log.Printf("ERROR: Could not edit event message %s: %v", i.Message.ID, err)
-			return
+			})
+			if err != nil {
+				log.Printf("ERROR: Could not edit event message %s: %v", i.Message.ID, err)
+				return
+			}
+		} else {
+			_, err = s.ChannelMessageEditComplex(&discordgo.MessageEdit{
+				ID:      i.Message.ID,
+				Channel: i.ChannelID,
+				Embeds: []*discordgo.MessageEmbed{
+					i.Message.Embeds[0],
+					{
+						Title: "Attendees",
+						Fields: []*discordgo.MessageEmbedField{
+							{Name: "Going", Value: strings.Join(going, ", ")},
+						},
+					},
+				},
+			})
+			if err != nil {
+				log.Printf("ERROR: Could not edit event message %s: %v", i.Message.ID, err)
+				return
+			}
 		}
 
 		// Insert user into going for event
@@ -208,6 +253,102 @@ func MessageComponentHandler(s *discordgo.Session, i *discordgo.InteractionCreat
 		}
 	case "flaking":
 		s.InteractionRespond(i.Interaction, willUpdate)
+
+		// Get flaking list for event
+		var result string
+		err := getFlaking.QueryRow(i.Message.ID).Scan(&result)
+		if err != nil {
+			log.Printf("ERROR: Could not query getFlaking with %s: %v", i.Message.ID, err)
+			return
+		}
+		// Put flaking list into slice
+		var flaking []string
+		if len(result) > 0 {
+			flaking = strings.Split(result, ",;")
+		}
+
+		// Check if person is already flaking
+		flakes := make(map[string]bool)
+		for _, person := range flaking {
+			flakes[person] = true
+		}
+		if flakes[i.Member.User.Username] {
+			return
+		}
+
+		// Get going list for event
+		err = getGoing.QueryRow(i.Message.ID).Scan(&result)
+		if err != nil {
+			log.Printf("ERROR: Could not query getGoing with %s: %v", i.Message.ID, err)
+			return
+		}
+		// Put going list into slice
+		var going []string
+		if len(result) > 0 {
+			going = strings.Split(result, ",;")
+		}
+
+		// Check if the person is in the going list
+		for ind, person := range going {
+			// If user is in the going list remove them from it
+			if i.Member.User.Username == person {
+				going[ind] = going[len(going)-1]
+				going = going[:len(going)-1]
+
+				_, err = updateEventGoing.Exec(strings.Join(going, ",;"), i.Message.ID)
+				if err != nil {
+					log.Printf("ERROR: Could not remove user from going list: updateEventGoing with %s: %v", i.Message.ID, err)
+				}
+				break
+			}
+		}
+
+		flaking = append(flaking, i.Member.User.Username)
+
+		if len(going) > 0 {
+			_, err = s.ChannelMessageEditComplex(&discordgo.MessageEdit{
+				ID:      i.Message.ID,
+				Channel: i.ChannelID,
+				Embeds: []*discordgo.MessageEmbed{
+					i.Message.Embeds[0],
+					{
+						Title: "Attendees",
+						Fields: []*discordgo.MessageEmbedField{
+							{Name: "Going", Value: strings.Join(going, ", ")},
+							{Name: "Flaking", Value: strings.Join(flaking, ", ")},
+						},
+					},
+				},
+			})
+			if err != nil {
+				log.Printf("ERROR: Could not edit event message %s: %v", i.Message.ID, err)
+				return
+			}
+		} else {
+			_, err = s.ChannelMessageEditComplex(&discordgo.MessageEdit{
+				ID:      i.Message.ID,
+				Channel: i.ChannelID,
+				Embeds: []*discordgo.MessageEmbed{
+					i.Message.Embeds[0],
+					{
+						Title: "Attendees",
+						Fields: []*discordgo.MessageEmbedField{
+							{Name: "Flaking", Value: strings.Join(flaking, ", ")},
+						},
+					},
+				},
+			})
+			if err != nil {
+				log.Printf("ERROR: Could not edit event message %s: %v", i.Message.ID, err)
+				return
+			}
+		}
+
+		// Insert user into flaking for event
+		_, err = updateEventFlaking.Exec(strings.Join(flaking, ",;"), i.Message.ID)
+		if err != nil {
+			log.Printf("ERROR: Could not updateEventFlaking with %s: %v", i.Message.ID, err)
+		}
 	}
 }
 
