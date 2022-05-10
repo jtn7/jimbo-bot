@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bimbot/jimlib"
 	"crypto/rand"
 	"database/sql"
 	"fmt"
@@ -19,13 +20,7 @@ import (
 
 var botToken string
 
-// Event prepared statements
-var insertEvent *sql.Stmt
-var getGoing *sql.Stmt
-var getFlaking *sql.Stmt
-var updateEventGoing *sql.Stmt
-var updateEventFlaking *sql.Stmt
-
+// Initialize DB and prepared statements
 func init() {
 	botToken = os.Getenv("TOKEN")
 
@@ -34,30 +29,7 @@ func init() {
 	if err != nil {
 		log.Fatal("could not open db file: ", err)
 	}
-
-	insertEvent, err = db.Prepare(`insert into Events(MessageID, Title, Date, Details, Going, Flaking)
-										values(?,?,?,?,?,?)`)
-	if err != nil {
-		log.Fatal("failed to create insertEvent prepared statement: ", err)
-	}
-
-	getGoing, err = db.Prepare(`select Going from Events where MessageID = ?`)
-	if err != nil {
-		log.Fatal("failed to create updateEventGoing prepared statement: ", err)
-	}
-	getFlaking, err = db.Prepare(`select Flaking from Events where MessageID = ?`)
-	if err != nil {
-		log.Fatal("failed to create updateEventGoing prepared statement: ", err)
-	}
-
-	updateEventGoing, err = db.Prepare(`update Events set Going = ? where MessageID = ?`)
-	if err != nil {
-		log.Fatal("failed to create updateEventGoing prepared statement: ", err)
-	}
-	updateEventFlaking, err = db.Prepare(`update Events set Flaking = ? where MessageID = ?`)
-	if err != nil {
-		log.Fatal("failed to create updateEventFlaking prepared statement: ", err)
-	}
+	jimlib.AddPreparedStatements(db)
 }
 
 var est, _ = time.LoadLocation("America/New_York")
@@ -120,7 +92,7 @@ func MessageComponentHandler(s *discordgo.Session, i *discordgo.InteractionCreat
 
 		eventDate, _ := time.ParseInLocation("Mon 01/02/06 3:04 PM", i.Message.Embeds[0].Fields[0].Value, est)
 		// Insert event into db
-		_, err := insertEvent.Exec(i.Message.ID, i.Message.Embeds[0].Title, fmt.Sprintf("%d", eventDate.Unix()), i.Message.Embeds[0].Description, "", "")
+		_, err := jimlib.InsertEvent.Exec(i.Message.ID, i.Message.Embeds[0].Title, fmt.Sprintf("%d", eventDate.Unix()), i.Message.Embeds[0].Description, "", "")
 		if err != nil {
 			log.Println("ERROR: Could not insert into db:", err)
 		}
@@ -158,7 +130,7 @@ func MessageComponentHandler(s *discordgo.Session, i *discordgo.InteractionCreat
 
 		// Get people going to the event
 		var result string
-		err := getGoing.QueryRow(i.Message.ID).Scan(&result)
+		err := jimlib.GetGoing.QueryRow(i.Message.ID).Scan(&result)
 		if err != nil {
 			log.Printf("ERROR: Could not query getGoing with %s: %v", i.Message.ID, err)
 			return
@@ -180,7 +152,7 @@ func MessageComponentHandler(s *discordgo.Session, i *discordgo.InteractionCreat
 		}
 
 		// Get users in the flaking list
-		err = getFlaking.QueryRow(i.Message.ID).Scan(&result)
+		err = jimlib.GetFlaking.QueryRow(i.Message.ID).Scan(&result)
 		if err != nil {
 			log.Printf("ERROR: Could not query getFlaking with %s: %v", i.Message.ID, err)
 			return
@@ -197,7 +169,7 @@ func MessageComponentHandler(s *discordgo.Session, i *discordgo.InteractionCreat
 				flaking[ind] = flaking[len(flaking)-1]
 				flaking = flaking[:len(flaking)-1]
 
-				_, err = updateEventFlaking.Exec(strings.Join(flaking, ",;"), i.Message.ID)
+				_, err = jimlib.UpdateEventFlaking.Exec(strings.Join(flaking, ",;"), i.Message.ID)
 				if err != nil {
 					log.Printf("ERROR: Could not remove user from flaking list: updateEventFlaking with %s: %v", i.Message.ID, err)
 				}
@@ -247,7 +219,7 @@ func MessageComponentHandler(s *discordgo.Session, i *discordgo.InteractionCreat
 		}
 
 		// Insert user into going for event
-		_, err = updateEventGoing.Exec(strings.Join(going, ",;"), i.Message.ID)
+		_, err = jimlib.UpdateEventGoing.Exec(strings.Join(going, ",;"), i.Message.ID)
 		if err != nil {
 			log.Printf("ERROR: Could not updateEventGoing with %s: %v", i.Message.ID, err)
 		}
@@ -256,7 +228,7 @@ func MessageComponentHandler(s *discordgo.Session, i *discordgo.InteractionCreat
 
 		// Get flaking list for event
 		var result string
-		err := getFlaking.QueryRow(i.Message.ID).Scan(&result)
+		err := jimlib.GetFlaking.QueryRow(i.Message.ID).Scan(&result)
 		if err != nil {
 			log.Printf("ERROR: Could not query getFlaking with %s: %v", i.Message.ID, err)
 			return
@@ -277,7 +249,7 @@ func MessageComponentHandler(s *discordgo.Session, i *discordgo.InteractionCreat
 		}
 
 		// Get going list for event
-		err = getGoing.QueryRow(i.Message.ID).Scan(&result)
+		err = jimlib.GetGoing.QueryRow(i.Message.ID).Scan(&result)
 		if err != nil {
 			log.Printf("ERROR: Could not query getGoing with %s: %v", i.Message.ID, err)
 			return
@@ -295,7 +267,7 @@ func MessageComponentHandler(s *discordgo.Session, i *discordgo.InteractionCreat
 				going[ind] = going[len(going)-1]
 				going = going[:len(going)-1]
 
-				_, err = updateEventGoing.Exec(strings.Join(going, ",;"), i.Message.ID)
+				_, err = jimlib.UpdateEventGoing.Exec(strings.Join(going, ",;"), i.Message.ID)
 				if err != nil {
 					log.Printf("ERROR: Could not remove user from going list: updateEventGoing with %s: %v", i.Message.ID, err)
 				}
@@ -345,7 +317,7 @@ func MessageComponentHandler(s *discordgo.Session, i *discordgo.InteractionCreat
 		}
 
 		// Insert user into flaking for event
-		_, err = updateEventFlaking.Exec(strings.Join(flaking, ",;"), i.Message.ID)
+		_, err = jimlib.UpdateEventFlaking.Exec(strings.Join(flaking, ",;"), i.Message.ID)
 		if err != nil {
 			log.Printf("ERROR: Could not updateEventFlaking with %s: %v", i.Message.ID, err)
 		}
